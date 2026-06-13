@@ -25,9 +25,22 @@ var QUICVersionContextKey = &quicVersionContextKey{}
 
 const clientSessionStateRevision = 5
 
+// TLSConn is the interface satisfied by *crypto/tls.QUICConn and by custom
+// TLS implementations injected via quic.Config.TLSClientConnFactory (e.g. uTLS).
+type TLSConn interface {
+	Start(ctx context.Context) error
+	NextEvent() tls.QUICEvent
+	Close() error
+	HandleData(level tls.QUICEncryptionLevel, data []byte) error
+	SetTransportParameters(params []byte)
+	StoreSession(session *tls.SessionState) error
+	SendSessionTicket(opts tls.QUICSessionTicketOptions) error
+	ConnectionState() tls.ConnectionState
+}
+
 type cryptoSetup struct {
 	tlsConf *tls.Config
-	conn    *tls.QUICConn
+	conn    TLSConn
 
 	events []Event
 
@@ -66,7 +79,9 @@ type cryptoSetup struct {
 
 var _ CryptoSetup = &cryptoSetup{}
 
-// NewCryptoSetupClient creates a new crypto setup for the client
+// NewCryptoSetupClient creates a new crypto setup for the client.
+// connFactory, if non-nil, creates the TLS connection (e.g. a uTLS bridge).
+// If nil, the standard crypto/tls client is used.
 func NewCryptoSetupClient(
 	connID protocol.ConnectionID,
 	tp *wire.TransportParameters,
@@ -76,6 +91,7 @@ func NewCryptoSetupClient(
 	qlogger qlogwriter.Recorder,
 	logger utils.Logger,
 	version protocol.Version,
+	connFactory func(*tls.QUICConfig) TLSConn,
 ) CryptoSetup {
 	cs := newCryptoSetup(
 		connID,
@@ -92,10 +108,15 @@ func NewCryptoSetupClient(
 	cs.tlsConf = tlsConf
 	cs.allow0RTT = enable0RTT
 
-	cs.conn = tls.QUICClient(&tls.QUICConfig{
+	qCfg := &tls.QUICConfig{
 		TLSConfig:           tlsConf,
 		EnableSessionEvents: true,
-	})
+	}
+	if connFactory != nil {
+		cs.conn = connFactory(qCfg)
+	} else {
+		cs.conn = tls.QUICClient(qCfg)
+	}
 	cs.conn.SetTransportParameters(cs.ourParams.Marshal(protocol.PerspectiveClient))
 
 	return cs
@@ -270,6 +291,10 @@ func (h *cryptoSetup) handleEvent(ev tls.QUICEvent) (err error) {
 	case tls.QUICStoreSession:
 		if h.perspective == protocol.PerspectiveServer {
 			panic("cryptoSetup BUG: unexpected QUICStoreSession event for the server")
+		}
+		if ev.SessionState == nil {
+			// Custom TLS conn (e.g. uTLS) disabled session events; skip storage.
+			return nil
 		}
 		ev.SessionState.Extra = append(
 			ev.SessionState.Extra,

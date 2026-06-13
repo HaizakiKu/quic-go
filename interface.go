@@ -191,7 +191,18 @@ type Config struct {
 	EnableStreamResetPartialDelivery bool
 
 	Tracer func(ctx context.Context, isClient bool, connID ConnectionID) qlogwriter.Trace
+
+	// TLSClientConnFactory, if non-nil, is called for each new outbound connection to create
+	// the QUIC TLS engine. The returned value must implement handshake.TLSConn.
+	// Use this to inject a custom TLS library (e.g. uTLS for browser fingerprinting).
+	// If nil, the standard crypto/tls client is used.
+	// The factory receives the QUICConfig that would be passed to tls.QUICClient.
+	TLSClientConnFactory func(*tls.QUICConfig) any
 }
+
+// QUICTLSConn is the interface that custom TLS implementations passed via
+// Config.TLSClientConnFactory must satisfy.  It matches handshake.TLSConn exactly.
+type QUICTLSConn = handshake.TLSConn
 
 // ClientHelloInfo contains information about an incoming connection attempt.
 //

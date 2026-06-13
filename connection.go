@@ -477,6 +477,17 @@ var newClientConnection = func(
 	if s.qlogger != nil {
 		s.qlogTransportParameters(params, protocol.PerspectiveClient, false)
 	}
+	var connFactory func(*tls.QUICConfig) handshake.TLSConn
+	if s.config.TLSClientConnFactory != nil {
+		externalFactory := s.config.TLSClientConnFactory
+		connFactory = func(cfg *tls.QUICConfig) handshake.TLSConn {
+			v := externalFactory(cfg)
+			if tc, ok := v.(handshake.TLSConn); ok {
+				return tc
+			}
+			return nil
+		}
+	}
 	cs := handshake.NewCryptoSetupClient(
 		destConnID,
 		params,
@@ -486,6 +497,7 @@ var newClientConnection = func(
 		s.qlogger,
 		logger,
 		s.version,
+		connFactory,
 	)
 	s.cryptoStreamHandler = cs
 	s.cryptoStreamManager = newCryptoStreamManager(s.initialStream, s.handshakeStream, oneRTTStream)
